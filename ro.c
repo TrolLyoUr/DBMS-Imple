@@ -1,15 +1,30 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <stdbool.h>
 #include "ro.h"
 #include "db.h"
 #include "bufpool.h"
 #include "filecache.h"
+#include "hashtab.h"
 
 BufPool pool;
 Conf *cf_curr;
 Database *db_curr;
 FileCache *file_cache;
+HashTable *ht;
+
+typedef UINT64 (*hash_function)(UINT64, UINT);
+
+// Function Declarations
+Table *find_table_by_name(const char *table_name, Database *db);
+_Table *block_nested_loop_join(const UINT idx1, Table *table1, const UINT idx2, Table *table2);
+_Table *join(const UINT idx1, const char *table1_name, const UINT idx2, const char *table2_name);
+_Table *sel(const UINT idx, const INT cond_val, const char *table_name);
+_Table *grace_hash_join(int attr1, Table *table1, int attr2, Table *table2);
+_Table **partition_table(Table *table, int attr, hash_function hash_func, int table_idx);
+UINT64 hash_func(UINT64 key, UINT num_partitions);
+void free_partitions(_Table **partitions, UINT num_partitions);
 
 void init()
 {
@@ -34,6 +49,18 @@ void release()
     freeBufPool(pool);
     free_file_cache(file_cache);
     printf("release() is invoked.\n");
+}
+
+Table *find_table_by_name(const char *table_name, Database *db)
+{
+    for (UINT i = 0; i < db->ntables; i++)
+    {
+        if (strcmp(db->tables[i].name, table_name) == 0)
+        {
+            return (&db->tables[i]);
+        }
+    }
+    return NULL;
 }
 
 _Table *sel(const UINT idx, const INT cond_val, const char *table_name)
@@ -188,25 +215,13 @@ _Table *join(const UINT idx1, const char *table1_name, const UINT idx2, const ch
         // Naive nested for-loop join
         // Determine which table to be the outer loop
         if (npages1 > npages2)
-            return naive_nested_loop_join(idx1, table1, idx2, table2);
+            return block_nested_loop_join(idx1, table1, idx2, table2);
         else
         {
-            return naive_nested_loop_join(idx2, table2, idx1, table1);
+            return block_nested_loop_join(idx2, table2, idx1, table1);
         }
     }
 
-    return NULL;
-}
-
-Table *find_table_by_name(const char *table_name, Database *db)
-{
-    for (UINT i = 0; i < db->ntables; i++)
-    {
-        if (strcmp(db->tables[i].name, table_name) == 0)
-        {
-            return &db->tables[i];
-        }
-    }
     return NULL;
 }
 
@@ -246,7 +261,10 @@ _Table *block_nested_loop_join(const UINT idx1, Table *table1, const UINT idx2, 
     result->nattrs = table1->nattrs + table2->nattrs;
 
     // Iterate through the pages of table1
-    while (1)
+    bool end_of_table1 = false;
+    int outer_loop_slot[pages_per_block];
+    int latest_slot = 0;
+    while (!end_of_table1)
     {
         for (UINT i = 0; i < pages_per_block; i++)
         {
@@ -275,9 +293,12 @@ _Table *block_nested_loop_join(const UINT idx1, Table *table1, const UINT idx2, 
                 { // page is already in pool
                     fseek(table_fp1, cf_curr->page_size - sizeof(UINT64), SEEK_CUR);
                 }
+                outer_loop_slot[i] = slot1;
+                latest_slot = i;
             }
             else
             {
+                end_of_table1 = true;
                 break;
             }
         }
@@ -310,62 +331,66 @@ _Table *block_nested_loop_join(const UINT idx1, Table *table1, const UINT idx2, 
             }
 
             // Iterate through the tuples of table1
-            for (UINT i = 0; i < tuples_per_page1; i++)
+            for (int i = 0; i <= latest_slot; i++)
             {
-                // Check if the tuple is valid
-                if (pool->bufs[slot1].data + (i * table1->nattrs * sizeof(INT)) == 0)
-                {
-                    continue;
-                }
-
-                // Iterate through the tuples of table2
-                for (UINT j = 0; j < tuples_per_page2; j++)
+                slot1 = outer_loop_slot[i];
+                for (UINT j = 0; j < tuples_per_page1; j++)
                 {
                     // Check if the tuple is valid
-                    if (pool->bufs[slot2].data + (j * table2->nattrs * sizeof(INT)) == 0)
+                    if (pool->bufs[slot1].data + (j * table1->nattrs * sizeof(INT)) == 0)
                     {
                         continue;
                     }
 
-                    // Check if the two tuples are joinable
-                    if (memcmp(pool->bufs[slot1].data + (i * table1->nattrs * sizeof(INT) + attr_offset1),
-                               pool->bufs[slot2].data + (j * table2->nattrs * sizeof(INT) + attr_offset2),
-                               sizeof(INT)) == 0)
+                    // Iterate through the tuples of table2
+                    for (UINT k = 0; k < tuples_per_page2; k++)
                     {
-                        // Allocate space for the new tuple
-                        ntuples++;
-                        result = realloc(result, sizeof(_Table) + result->ntuples * sizeof(Tuple));
+                        // Check if the tuple is valid
+                        if (pool->bufs[slot2].data + (k * table2->nattrs * sizeof(INT)) == 0)
+                        {
+                            continue;
+                        }
 
-                        // Copy the attributes from the two tuples as result
-                        Tuple t = malloc(sizeof(INT) * result->nattrs);
-                        result->tuples[ntuples - 1] = t;
-                        memcpy(t,
-                               pool->bufs[slot1].data + (i * table1->nattrs * sizeof(INT)),
-                               table1->nattrs * sizeof(INT));
-                        memcpy(t + table1->nattrs * sizeof(INT),
-                               pool->bufs[slot2].data + (j * table2->nattrs * sizeof(INT)),
-                               table2->nattrs * sizeof(INT));
+                        // Check if the two tuples are joinable
+                        if (memcmp(pool->bufs[slot1].data + (j * table1->nattrs * sizeof(INT) + attr_offset1),
+                                   pool->bufs[slot2].data + (k * table2->nattrs * sizeof(INT) + attr_offset2),
+                                   sizeof(INT)) == 0)
+                        {
+                            // Allocate space for the new tuple
+                            ntuples++;
+                            result = realloc(result, sizeof(_Table) + result->ntuples * sizeof(Tuple));
+
+                            // Copy the attributes from the two tuples as result
+                            Tuple t = malloc(sizeof(INT) * result->nattrs);
+                            result->tuples[ntuples - 1] = t;
+                            memcpy(t,
+                                   pool->bufs[slot1].data + (j * table1->nattrs * sizeof(INT)),
+                                   table1->nattrs * sizeof(INT));
+                            memcpy(t + table1->nattrs * sizeof(INT),
+                                   pool->bufs[slot2].data + (k * table2->nattrs * sizeof(INT)),
+                                   table2->nattrs * sizeof(INT));
+                        }
                     }
                 }
             }
             release_page(pool, table2->oid, page_id2);
         }
         rewind(table_fp2);
-        release_page(pool, table1->oid, page_id1);
+        for (UINT i = 0; i <= latest_slot; i++)
+        {
+            pool->bufs[outer_loop_slot[i]].pin = 0; // release the pages of outer loop
+        }
     }
     rewind(table_fp1);
     result->ntuples = ntuples;
     return result;
 }
 
-_Table *grace_hash_join(_Table *table1, _Table *table2, int attr1, int attr2)
+_Table *grace_hash_join(int attr1, Table *table1, int attr2, Table *table2)
 {
-    unsigned int num_partitions = (pool->nbufs - 2) / 2;
-    UINT64 cur_page_id;
-
     // Partition the tables
-    _Table **table1_partitions = partition_table(table1, attr1, num_partitions, simple_hash);
-    _Table **table2_partitions = partition_table(table2, attr2, num_partitions, simple_hash);
+    _Table **table1_partitions = partition_table(table1, attr1, hash_func, 0);
+    _Table **table2_partitions = partition_table(table2, attr2, hash_func, 1);
 
     // Initialize result table
     _Table *result = malloc(sizeof(_Table));
@@ -373,106 +398,192 @@ _Table *grace_hash_join(_Table *table1, _Table *table2, int attr1, int attr2)
     result->ntuples = 0;
 
     // Perform join for each pair of partitions
-    for (unsigned int i = 0; i < num_partitions; i++)
+    for (UINT i = 0; i < pool->num_partitions; i++)
     {
         _Table *partition1 = table1_partitions[i];
         _Table *partition2 = table2_partitions[i];
 
-        // Load partitions into buffer pool
+        // Create and initialize hash table for the current partition
+        ht = initHashTable(partition1->ntuples);
+
+        // Load partitions and hashing attribute into hash table
         for (UINT64 j = 0; j < partition1->ntuples; j++)
         {
-            cur_page_id = j;
-            request_page(pool, i, cur_page_id);
+            insertIntoHashTable(ht, partition1->tuples[j], partition1->tuples[j][attr1]);
         }
 
         // Perform join
         for (UINT64 j = 0; j < partition2->ntuples; j++)
         {
-            cur_page_id = j;
-            int buf_slot = request_page(buf_pool, i, cur_page_id);
-
-            // Check if the tuples in partition2 match any tuple in partition1
-            for (UINT64 k = 0; k < partition1->ntuples; k++)
+            // Get the tuple from the partition in hashtable
+            UINT64 index = hashFunction(partition2->tuples[j][attr2], ht->size);
+            while (ht->table[index] != NULL)
             {
-                if (partition2->tuples[j][attr2] == buf_pool->bufs[buf_slot].data[k * sizeof(INT)])
+                if (memcmp(ht->table[index]->tuple + sizeof(INT) * attr1, partition2->tuples[j] + sizeof(INT) * attr2, sizeof(INT)) == 0)
                 {
-                    // Add joined tuple to the result table
+                    // Allocate space for the new tuple
                     result->ntuples++;
-                    result->tuples = realloc(result->tuples, result->ntuples * sizeof(Tuple));
+                    result = realloc(result, result->ntuples * sizeof(Tuple));
 
-                    Tuple new_tuple = malloc(sizeof(INT) * result->nattrs);
-                    memcpy(new_tuple, partition1->tuples[k], sizeof(INT) * table1->nattrs);
-                    memcpy(new_tuple + table1->nattrs, partition2->tuples[j], sizeof(INT) * table2->nattrs);
-
-                    result->tuples[result->ntuples - 1] = new_tuple;
+                    // Copy the attributes from the two tuples as result
+                    Tuple t = malloc(sizeof(INT) * result->nattrs);
+                    result->tuples[result->ntuples - 1] = t;
+                    memcpy(t, ht->table[index]->tuple, table1->nattrs * sizeof(INT));
+                    memcpy(t + table1->nattrs * sizeof(INT), partition2->tuples[j], table2->nattrs * sizeof(INT));
                 }
+                ht->table[index] = ht->table[index]->next;
             }
-
-            // Release the buffer pool slot
-            release_page(buf_pool, i, cur_page_id);
         }
-
-        // Release partition1 from the buffer pool
-        for (UINT64 j = 0; j < partition1->ntuples; j++)
-        {
-            cur_page_id = j;
-            release_page(buf_pool, i, cur_page_id);
-        }
+        freeHashTable(ht);
     }
 
     // Cleanup
-    free_partitions(table1_partitions, num_partitions);
-    free_partitions(table2_partitions, num_partitions);
-    freeBufPool(buf_pool);
+    free_partitions(table1_partitions, pool->num_partitions);
+    free_partitions(table2_partitions, pool->num_partitions);
 
     return result;
 }
 
-typedef UINT64 (*hash_function)(INT, UINT64);
-
-_Table **partition_table(_Table *table, int attr, UINT64 num_partitions, hash_function hash_func, BufPool buf_pool)
+_Table **partition_table(Table *table, int attr, hash_function hash_func, int table_idx)
 {
     // Allocate memory for the partition tables
-    _Table **partitions = malloc(num_partitions * sizeof(_Table *));
+    _Table **partitions = malloc(pool->num_partitions * sizeof(_Table *));
 
     // Initialize the partition tables
-    for (UINT64 i = 0; i < num_partitions; i++)
+    for (UINT i = 0; i < pool->num_partitions; i++)
     {
         partitions[i] = malloc(sizeof(_Table));
         partitions[i]->nattrs = table->nattrs;
         partitions[i]->ntuples = 0;
-        partitions[i]->tuples[0] = NULL;
     }
-
-    // Partition the input table
-    for (UINT64 i = 0; i < table->ntuples; i++)
+    // Initialize the partition table metadata
+    for (UINT64 i = pool->num_partitions * table_idx; i < pool->num_partitions; i++)
     {
-        Tuple tuple = table->tuples[i];
-        INT attr_value = tuple[attr];
-        UINT64 partition_idx = hash_func(attr_value, num_partitions);
-
-        // Add the tuple to the corresponding partition
-        _Table *partition = partitions[partition_idx];
-        partition->ntuples++;
-
-        // Request a page from the buffer pool for the partition
-        UINT64 cur_page_id = partition->ntuples - 1;
-        int slot = request_page(buf_pool, partition_idx, cur_page_id);
-
-        // Write the tuple to the page in the buffer pool
-        memcpy(buf_pool->bufs[slot].data, tuple, sizeof(Tuple));
-
-        // Release the page back to the buffer pool
-        release_page(buf_pool, partition_idx, cur_page_id);
+        pool->parts[i].table_oid = table->oid;
+        pool->parts[i].part_id = i;
+        pool->parts[i].num_tuples = 0;
+        pool->parts[i].num_pages = 0;
+        pool->parts[i].page_ids = malloc(sizeof(UINT64) * pool->parts[i].num_pages);
     }
 
+    // Open the table file
+    FILE *table_fp = get_file_pointer(file_cache, table->oid, db_curr->path);
+    if (table_fp == NULL)
+    {
+        perror("Fail to open the table file.\n");
+        exit(-1);
+    }
+
+    // Partition the table by hashing the attribute
+    UINT64 tuples_per_page = (cf_curr->page_size - sizeof(UINT64)) / (table->nattrs * sizeof(INT));
+    UINT64 page_id = 0;
+    while (fread(&page_id, sizeof(UINT64), 1, table_fp) == 1)
+    {
+        // Read the page into buffer pool
+        int buf_slot = pageInPool(pool, table->oid, page_id);
+
+        if (buf_slot == -1)
+        { // page is not already in pool
+            buf_slot = grabNextSlot(pool);
+            log_release_page(pool->bufs[buf_slot].page_id); // log release
+            if (buf_slot < 0)
+            {
+                fprintf(stderr, "Failed to find slot for Table:%s page:%ld\n", table->name, page_id);
+                exit(1);
+            }
+            pool->bufs[buf_slot].table_oid = table->oid;
+            pool->bufs[buf_slot].page_id = page_id;
+            pool->bufs[buf_slot].pin = 1;
+            pool->bufs[buf_slot].use = 1;
+            // Read the page from the disk
+            fread(pool->bufs[buf_slot].data, cf_curr->page_size - sizeof(UINT64), 1, table_fp);
+            log_read_page(page_id); // log read
+        }
+        else
+        { // page is already in pool
+            fseek(table_fp, cf_curr->page_size - sizeof(UINT64), SEEK_CUR);
+        }
+
+        // Iterate through the tuples of the page
+        for (UINT64 i = 0; i < tuples_per_page; i++)
+        {
+            // Check if the tuple is valid
+            if (pool->bufs[buf_slot].data + (i * table->nattrs * sizeof(INT)) == 0)
+            {
+                continue;
+            }
+
+            // Hash the attribute value
+            UINT part_id = hash_func(pool->bufs[buf_slot].data[i * table->nattrs * sizeof(INT) + attr * sizeof(INT)], pool->num_partitions) + table_idx * pool->num_partitions;
+
+            // Add the tuple to the corresponding partition
+            _Table *partition = partitions[part_id];
+            partition->ntuples++;
+            partition = realloc(partition, sizeof(_Table) + partition->ntuples * sizeof(Tuple));
+
+            Tuple tuple = malloc(sizeof(INT) * table->nattrs);
+            memcpy(tuple, pool->bufs[buf_slot].data + (i * table->nattrs * sizeof(INT)), sizeof(INT) * table->nattrs);
+            partition->tuples[partition->ntuples - 1] = tuple;
+
+            // Add the partition metadata to the buffer pool
+            pool->parts[part_id].num_tuples++;
+            bool page_exists = false;
+            for (int j = 0; j < pool->parts[part_id].num_pages; j++)
+            {
+                if (pool->parts[part_id].page_ids[j] == page_id)
+                {
+                    page_exists = true;
+                    break;
+                }
+            }
+            if (!page_exists)
+            {
+                pool->parts[part_id].num_pages++;
+                pool->parts[part_id].page_ids = realloc(pool->parts[part_id].page_ids, pool->parts[part_id].num_pages * sizeof(UINT64));
+                pool->parts[part_id].page_ids[pool->parts[part_id].num_pages - 1] = page_id;
+            }
+        }
+
+        // Release the buffer pool slot
+        release_page(pool, table->oid, page_id);
+    }
+    rewind(table_fp);
     return partitions;
 }
 
 // Simple hash function for attribute values
-UINT64 hash_func(UINT64 key, UINT64 num_partitions)
+UINT64 hash_func(UINT64 key, UINT num_partitions)
 {
     const double A = 0.6180339887; // Constant A should be an irrational number between 0 and 1
     double fractional_part = key * A - (int64_t)(key * A);
     return (UINT64)(num_partitions * fractional_part);
+}
+
+void free_partitions(_Table **partitions, UINT num_partitions)
+{
+    if (partitions == NULL)
+    {
+        return;
+    }
+
+    // Iterate through each partition table
+    for (UINT i = 0; i < num_partitions; i++)
+    {
+        _Table *partition = partitions[i];
+
+        if (partition != NULL)
+        {
+            // Free the memory used by each tuple in the partition
+            for (UINT64 j = 0; j < partition->ntuples; j++)
+            {
+                free(partition->tuples[j]);
+            }
+
+            // Free the memory used by the partition table structure
+            free(partition);
+        }
+    }
+
+    // Free the memory used by the partitions array
+    free(partitions);
 }

@@ -28,16 +28,15 @@ typedef struct bufPool
 {
     UINT nbufs; // how many buffers
     char *strategy;
-    UINT nfree;
-    UINT nused;
     buffer *bufs;
-    hashPartition *parts;
+    UINT num_partitions;  // number of partitions for Grace hash join
+    hashPartition *parts; // array of hashPartitions for both tables being joined
 } bufPool;
 
 typedef struct bufPool *BufPool;
 
 BufPool initBufPool();
+int grabNextSlot(BufPool);
 void release_page(BufPool, UINT, UINT64);
 int pageInPool(BufPool, UINT, UINT64);
-int removeFirstFree(BufPool);
 void freeBufPool(BufPool);
