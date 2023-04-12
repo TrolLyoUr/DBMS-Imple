@@ -192,7 +192,13 @@ _Table *join(const UINT idx1, const char *table1_name, const UINT idx2, const ch
     else
     {
         // Naive nested for-loop join
-        return naive_nested_loop_join(idx1, table1, idx2, table2);
+        // Determine which table to be the outer loop
+        if (npages1 > npages2)
+            return naive_nested_loop_join(idx1, table1, idx2, table2);
+        else
+        {
+            return naive_nested_loop_join(idx2, table2, idx1, table1);
+        }
     }
 
     return NULL;
