@@ -366,12 +366,16 @@ _Table *block_nested_loop_join(const UINT idx1, Table *table1, const UINT idx2, 
                             // Copy the attributes from the two tuples as result
                             Tuple t = malloc(sizeof(INT) * result->nattrs);
                             result->tuples[ntuples - 1] = t;
-                            memcpy(t,
-                                   pool->bufs[slot1].data + (j * table1->nattrs * sizeof(INT)),
-                                   table1->nattrs * sizeof(INT));
-                            memcpy(t + (table1->nattrs * sizeof(INT)),
-                                   pool->bufs[slot2].data + (k * table2->nattrs * sizeof(INT)),
-                                   table2->nattrs * sizeof(INT));
+
+                            for (int i = 0; i < table1->nattrs; i++)
+                            {
+                                ((INT *)t)[i] = ((INT *)(pool->bufs[slot1].data + (j * table1->nattrs * sizeof(INT))))[i];
+                            }
+
+                            for (int i = 0; i < table2->nattrs; i++)
+                            {
+                                ((INT *)t)[table1->nattrs + i] = ((INT *)(pool->bufs[slot2].data + (k * table2->nattrs * sizeof(INT))))[i];
+                            }
                         }
                     }
                 }
@@ -435,8 +439,16 @@ _Table *grace_hash_join(const UINT attr1, Table *table1, const UINT attr2, Table
                     // Copy the attributes from the two tuples as result
                     Tuple t = malloc(sizeof(INT) * result->nattrs);
                     result->tuples[result->ntuples - 1] = t;
-                    memcpy(t, ht->table[index]->tuple, table1->nattrs * sizeof(INT));
-                    memcpy(t + table1->nattrs * sizeof(INT), partition2->tuples[j], table2->nattrs * sizeof(INT));
+
+                    for (int i = 0; i < table1->nattrs; i++)
+                    {
+                        ((INT *)t)[i] = ((INT *)ht->table[index]->tuple)[i];
+                    }
+
+                    for (int i = 0; i < table2->nattrs; i++)
+                    {
+                        ((INT *)t)[table1->nattrs + i] = ((INT *)partition2->tuples[j])[i];
+                    }
                 }
                 ht->table[index] = ht->table[index]->next;
             }
