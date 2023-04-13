@@ -13,6 +13,21 @@ HashTable *initHashTable(UINT64 size)
 
 UINT64 hashFunction(UINT attr, UINT64 tableSize)
 {
+    const UINT64 multiplier = 0xc6a4a7935bd1e995;
+    const int r = 47;
+
+    UINT64 h = tableSize * (multiplier ^ r);
+
+    attr *= multiplier;
+    attr ^= attr >> r;
+    attr *= multiplier;
+
+    h ^= attr;
+    h *= multiplier;
+
+    h ^= h >> r;
+    h *= multiplier;
+    h ^= h >> r;
     return (UINT64)attr % tableSize;
 }
 
