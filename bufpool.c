@@ -5,17 +5,20 @@
 #include <string.h>
 #include <assert.h>
 #include <stdbool.h>
+#include <math.h>
 #include "bufpool.h"
 
-static unsigned int nvb = 0;
+UINT nvb = 0;
 
 int pageInPool(BufPool pool, UINT table, UINT64 page)
 {
-	int i;
-	for (i = 0; i < pool->nbufs; i++)
+	for (int i = 0; i < pool->nbufs; i++)
 	{
 		if (table == pool->bufs[i].table_oid && page == pool->bufs[i].page_id)
 		{
+			if (pool->bufs[i].use < 255)
+				pool->bufs[i].use++;
+			pool->bufs[i].pin = 1;
 			return i;
 		}
 	}
@@ -43,8 +46,6 @@ BufPool initBufPool()
 	newPool->bufs = malloc(nbufs * (sizeof(struct buffer)));
 	assert(newPool->bufs != NULL);
 	newPool->num_partitions = num_partitions;
-	newPool->parts = malloc(num_partitions * 2 * (sizeof(struct hashPartition)));
-	assert(newPool->parts != NULL);
 
 	int i;
 	for (i = 0; i < nbufs; i++)
@@ -54,15 +55,6 @@ BufPool initBufPool()
 		newPool->bufs[i].pin = 0;
 		newPool->bufs[i].use = 0;
 		newPool->bufs[i].data = malloc(cf->page_size - sizeof(UINT64)); // size of array equal to the number of tuples can fit in a page);
-		newPool->bufs[i].data = NULL;
-	}
-	for (i = 0; i < num_partitions * 2; i++)
-	{
-		newPool->parts[i].table_oid = 0;
-		newPool->parts[i].part_id = 0;
-		newPool->parts[i].num_tuples = 0;
-		newPool->parts[i].num_pages = 0;
-		newPool->parts[i].page_ids = NULL;
 	}
 	return newPool;
 }
@@ -76,6 +68,8 @@ int grabNextSlot(BufPool pool)
 		{
 			slot = nvb;
 			nvb = (nvb + 1) % pool->nbufs;
+			if (pool->bufs[slot].table_oid)
+				log_release_page(pool->bufs[slot].page_id);
 			return slot;
 		}
 		else

@@ -16,6 +16,6 @@ typedef struct HashTable
 } HashTable;
 
 HashTable *initHashTable(UINT64);
-UINT64 hashFunction(INT attr, UINT64 tableSize);
-void insertIntoHashTable(HashTable *ht, Tuple tuple, int attr);
+UINT64 hashFunction(UINT attr, UINT64 tableSize);
+void insertIntoHashTable(HashTable *ht, Tuple tuple, UINT attr);
 void freeHashTable(HashTable *ht);

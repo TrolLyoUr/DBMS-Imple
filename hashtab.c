@@ -11,12 +11,12 @@ HashTable *initHashTable(UINT64 size)
     return ht;
 }
 
-UINT64 hashFunction(INT attr, UINT64 tableSize)
+UINT64 hashFunction(UINT attr, UINT64 tableSize)
 {
     return (UINT64)attr % tableSize;
 }
 
-void insertIntoHashTable(HashTable *ht, Tuple tuple, int attr)
+void insertIntoHashTable(HashTable *ht, Tuple tuple, UINT attr)
 {
     UINT64 index = hashFunction(attr, ht->size);
 

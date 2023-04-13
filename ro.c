@@ -21,7 +21,7 @@ Table *find_table_by_name(const char *table_name, Database *db);
 _Table *block_nested_loop_join(const UINT idx1, Table *table1, const UINT idx2, Table *table2);
 _Table *join(const UINT idx1, const char *table1_name, const UINT idx2, const char *table2_name);
 _Table *sel(const UINT idx, const INT cond_val, const char *table_name);
-_Table *grace_hash_join(int attr1, Table *table1, int attr2, Table *table2);
+_Table *grace_hash_join(const UINT attr1, Table *table1, const UINT attr2, Table *table2);
 _Table **partition_table(Table *table, int attr, hash_function hash_func, int table_idx);
 UINT64 hash_func(UINT64 key, UINT num_partitions);
 void free_partitions(_Table **partitions, UINT num_partitions);
@@ -115,7 +115,6 @@ _Table *sel(const UINT idx, const INT cond_val, const char *table_name)
         if (slot == -1)
         { // page is not already in pool
             slot = grabNextSlot(pool);
-            log_release_page(pool->bufs[slot].page_id); // log release
             if (slot < 0)
             {
                 fprintf(stderr, "Failed to find slot for Table:%s page:%ld\n", table->name, page_id);
@@ -131,9 +130,6 @@ _Table *sel(const UINT idx, const INT cond_val, const char *table_name)
         }
         else
         { // page is already in pool
-            if (pool->bufs[slot].use < 255)
-                pool->bufs[slot].use++;
-            pool->bufs[slot].pin = 1;
             fseek(table_fp, cf_curr->page_size - sizeof(UINT64), SEEK_CUR);
         }
 
@@ -196,24 +192,23 @@ _Table *join(const UINT idx1, const char *table1_name, const UINT idx2, const ch
     UINT npages1 = (table1->ntuples + tuples_per_page1 - 1) / tuples_per_page1;
     UINT npages2 = (table2->ntuples + tuples_per_page2 - 1) / tuples_per_page2;
 
-    // Initialize the result table
-    UINT ntuples = 0;
-    UINT nattrs = table1->nattrs + table2->nattrs;
-    _Table *result = malloc(sizeof(_Table) + ntuples * sizeof(Tuple));
-    result->nattrs = nattrs;
-
     // Check if buffer slots are enough
     if (cf_curr->buf_slots >= npages1 + npages2)
     {
         // In-memory join (sort-merge join or hash join)
         // Implement either sort-merge join or hash join here
         // Grace hash join
-        return grace_hash_join(idx1, table1, idx2, table2);
+        printf("Grace hsah join() is invoked.\n");
+        if (npages1 > npages2)
+            return grace_hash_join(idx1, table1, idx2, table2);
+        else
+            return grace_hash_join(idx2, table2, idx1, table1);
     }
     else
     {
         // Naive nested for-loop join
         // Determine which table to be the outer loop
+        printf("Block nested join() is invoked.\n");
         if (npages1 > npages2)
             return block_nested_loop_join(idx1, table1, idx2, table2);
         else
@@ -250,15 +245,21 @@ _Table *block_nested_loop_join(const UINT idx1, Table *table1, const UINT idx2, 
 
     UINT tuples_per_page1 = (cf_curr->page_size - sizeof(UINT64)) / (sizeof(INT) * table1->nattrs);
     UINT tuples_per_page2 = (cf_curr->page_size - sizeof(UINT64)) / (sizeof(INT) * table2->nattrs);
+    UINT npages1 = (table1->ntuples + tuples_per_page1 - 1) / tuples_per_page1;
+    UINT npages2 = (table2->ntuples + tuples_per_page2 - 1) / tuples_per_page2;
+    UINT tuples_left1 = table1->ntuples % tuples_per_page1 ? table1->ntuples % tuples_per_page1 : tuples_per_page1;
+    UINT tuples_left2 = table2->ntuples % tuples_per_page2 ? table2->ntuples % tuples_per_page2 : tuples_per_page2;
+    UINT curr_page_count1 = 0;
+    UINT curr_page_count2 = 0;
     UINT64 page_id1 = 0;
     UINT64 page_id2 = 0;
     int slot1 = 0;
     int slot2 = 0;
 
     // Intialize the result table
-    UINT ntuples = 0;
-    _Table *result = malloc(sizeof(_Table) + ntuples * sizeof(Tuple));
+    _Table *result = malloc(sizeof(_Table));
     result->nattrs = table1->nattrs + table2->nattrs;
+    UINT ntuples = 0;
 
     // Iterate through the pages of table1
     bool end_of_table1 = false;
@@ -275,7 +276,6 @@ _Table *block_nested_loop_join(const UINT idx1, Table *table1, const UINT idx2, 
                 if (slot1 == -1)
                 { // page is not already in pool
                     slot1 = grabNextSlot(pool);
-                    log_release_page(pool->bufs[slot1].page_id); // log release
                     if (slot1 < 0)
                     {
                         fprintf(stderr, "Failed to find slot for Table:%s page:%ld\n", table1->name, page_id1);
@@ -287,6 +287,7 @@ _Table *block_nested_loop_join(const UINT idx1, Table *table1, const UINT idx2, 
                     pool->bufs[slot1].use = 1;
                     // Read the page from the disk
                     fread(pool->bufs[slot1].data, cf_curr->page_size - sizeof(UINT64), 1, table_fp1);
+                    printf("table1\n");
                     log_read_page(page_id1); // log read
                 }
                 else
@@ -311,7 +312,6 @@ _Table *block_nested_loop_join(const UINT idx1, Table *table1, const UINT idx2, 
             if (slot2 == -1)
             { // page is not already in pool
                 slot2 = grabNextSlot(pool);
-                log_release_page(pool->bufs[slot2].page_id); // log release
                 if (slot2 < 0)
                 {
                     fprintf(stderr, "Failed to find slot for Table:%s page:%ld\n", table2->name, page_id2);
@@ -324,31 +324,33 @@ _Table *block_nested_loop_join(const UINT idx1, Table *table1, const UINT idx2, 
                 // Read the page from the disk
                 fread(pool->bufs[slot2].data, cf_curr->page_size - sizeof(UINT64), 1, table_fp2);
                 log_read_page(page_id2); // log read
+                curr_page_count2++;
             }
             else
             { // page is already in pool
                 fseek(table_fp2, cf_curr->page_size - sizeof(UINT64), SEEK_CUR);
             }
 
-            // Iterate through the tuples of table1
-            for (int i = 0; i <= latest_slot; i++)
+            // Iterate through the pages of table1 block
+            for (UINT i = 0; i <= latest_slot; i++)
             {
                 slot1 = outer_loop_slot[i];
+                curr_page_count1++;
+                // Iterate through the tuples of table1
                 for (UINT j = 0; j < tuples_per_page1; j++)
                 {
-                    // Check if the tuple is valid
-                    if (pool->bufs[slot1].data + (j * table1->nattrs * sizeof(INT)) == 0)
+                    // Breake if the end of the table is reached
+                    if (curr_page_count1 == npages1 && j == tuples_left1)
                     {
-                        continue;
+                        break;
                     }
-
                     // Iterate through the tuples of table2
                     for (UINT k = 0; k < tuples_per_page2; k++)
                     {
-                        // Check if the tuple is valid
-                        if (pool->bufs[slot2].data + (k * table2->nattrs * sizeof(INT)) == 0)
+                        // Breake if the end of the table is reached
+                        if (curr_page_count2 == npages2 && k == tuples_left2)
                         {
-                            continue;
+                            break;
                         }
 
                         // Check if the two tuples are joinable
@@ -357,16 +359,17 @@ _Table *block_nested_loop_join(const UINT idx1, Table *table1, const UINT idx2, 
                                    sizeof(INT)) == 0)
                         {
                             // Allocate space for the new tuple
-                            ntuples++;
-                            result = realloc(result, sizeof(_Table) + result->ntuples * sizeof(Tuple));
+                            ++ntuples;
+                            result = realloc(result, sizeof(_Table) + ntuples * sizeof(Tuple));
 
+                            printf("result->ntuples: %d\n", ntuples);
                             // Copy the attributes from the two tuples as result
                             Tuple t = malloc(sizeof(INT) * result->nattrs);
                             result->tuples[ntuples - 1] = t;
                             memcpy(t,
                                    pool->bufs[slot1].data + (j * table1->nattrs * sizeof(INT)),
                                    table1->nattrs * sizeof(INT));
-                            memcpy(t + table1->nattrs * sizeof(INT),
+                            memcpy(t + (table1->nattrs * sizeof(INT)),
                                    pool->bufs[slot2].data + (k * table2->nattrs * sizeof(INT)),
                                    table2->nattrs * sizeof(INT));
                         }
@@ -386,8 +389,12 @@ _Table *block_nested_loop_join(const UINT idx1, Table *table1, const UINT idx2, 
     return result;
 }
 
-_Table *grace_hash_join(int attr1, Table *table1, int attr2, Table *table2)
+_Table *grace_hash_join(const UINT attr1, Table *table1, const UINT attr2, Table *table2)
 {
+    // Calculate the offset of the attribute
+    UINT attr_offset1 = attr1 * sizeof(INT);
+    UINT attr_offset2 = attr2 * sizeof(INT);
+
     // Partition the tables
     _Table **table1_partitions = partition_table(table1, attr1, hash_func, 0);
     _Table **table2_partitions = partition_table(table2, attr2, hash_func, 1);
@@ -419,11 +426,11 @@ _Table *grace_hash_join(int attr1, Table *table1, int attr2, Table *table2)
             UINT64 index = hashFunction(partition2->tuples[j][attr2], ht->size);
             while (ht->table[index] != NULL)
             {
-                if (memcmp(ht->table[index]->tuple + sizeof(INT) * attr1, partition2->tuples[j] + sizeof(INT) * attr2, sizeof(INT)) == 0)
+                if (memcmp(ht->table[index]->tuple + attr_offset1, partition2->tuples[j] + attr_offset2, sizeof(INT)) == 0)
                 {
                     // Allocate space for the new tuple
                     result->ntuples++;
-                    result = realloc(result, result->ntuples * sizeof(Tuple));
+                    result = realloc(result, sizeof(_Table) + result->ntuples * sizeof(Tuple));
 
                     // Copy the attributes from the two tuples as result
                     Tuple t = malloc(sizeof(INT) * result->nattrs);
@@ -456,16 +463,6 @@ _Table **partition_table(Table *table, int attr, hash_function hash_func, int ta
         partitions[i]->nattrs = table->nattrs;
         partitions[i]->ntuples = 0;
     }
-    // Initialize the partition table metadata
-    for (UINT64 i = pool->num_partitions * table_idx; i < pool->num_partitions; i++)
-    {
-        pool->parts[i].table_oid = table->oid;
-        pool->parts[i].part_id = i;
-        pool->parts[i].num_tuples = 0;
-        pool->parts[i].num_pages = 0;
-        pool->parts[i].page_ids = malloc(sizeof(UINT64) * pool->parts[i].num_pages);
-    }
-
     // Open the table file
     FILE *table_fp = get_file_pointer(file_cache, table->oid, db_curr->path);
     if (table_fp == NULL)
@@ -485,7 +482,6 @@ _Table **partition_table(Table *table, int attr, hash_function hash_func, int ta
         if (buf_slot == -1)
         { // page is not already in pool
             buf_slot = grabNextSlot(pool);
-            log_release_page(pool->bufs[buf_slot].page_id); // log release
             if (buf_slot < 0)
             {
                 fprintf(stderr, "Failed to find slot for Table:%s page:%ld\n", table->name, page_id);
@@ -525,27 +521,8 @@ _Table **partition_table(Table *table, int attr, hash_function hash_func, int ta
             memcpy(tuple, pool->bufs[buf_slot].data + (i * table->nattrs * sizeof(INT)), sizeof(INT) * table->nattrs);
             partition->tuples[partition->ntuples - 1] = tuple;
 
-            // Add the partition metadata to the buffer pool
-            pool->parts[part_id].num_tuples++;
-            bool page_exists = false;
-            for (int j = 0; j < pool->parts[part_id].num_pages; j++)
-            {
-                if (pool->parts[part_id].page_ids[j] == page_id)
-                {
-                    page_exists = true;
-                    break;
-                }
-            }
-            if (!page_exists)
-            {
-                pool->parts[part_id].num_pages++;
-                pool->parts[part_id].page_ids = realloc(pool->parts[part_id].page_ids, pool->parts[part_id].num_pages * sizeof(UINT64));
-                pool->parts[part_id].page_ids[pool->parts[part_id].num_pages - 1] = page_id;
-            }
+            partitions[part_id] = partition;
         }
-
-        // Release the buffer pool slot
-        release_page(pool, table->oid, page_id);
     }
     rewind(table_fp);
     return partitions;
