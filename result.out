@@ -1,0 +1,107 @@
+***** test/test1
+query-1 result:correct, io:correct
+query-2 result:correct, io:correct
+query-3 result:correct, io:correct
+query-4 result:correct, io:correct
+
+
+
+***** test/test2
+query-1 result:correct, io:correct
+query-2 result:correct, io:correct
+query-3 result:correct, io:correct
+query-4 result:correct, io:correct
+query-5 result:correct, io:correct
+query-6 result:correct, io:correct
+
+
+
+***** test/test3
+query-1 result:correct, io:correct
+query-2 result:correct, io:correct
+query-3 result:correct, io:correct
+
+
+
+***** test/test4
+query-1 result:correct, io:correct
+
+
+
+***** test/test5
+query-1 result:correct, io:correct
+query-2 result:correct, io:correct
+query-3 result:correct, io:correct
+query-4 result:correct, io:correct
+query-5 result:correct, io:correct
+query-6 result:wrong, io:correct
+query-7 result:correct, io:correct
+query-8 result:correct, io:correct
+query-9 result:correct, io:correct
+query-10 result:correct, io:correct
+
+
+
+***** test/test6
+query-1 missing
+query-2 missing
+query-3 missing
+query-4 missing
+query-5 missing
+
+
+
+***** test/test7
+query-1 result:correct, io:correct
+query-2 result:correct, io:correct
+query-3 result:correct, io:correct
+query-4 result:correct, io:correct
+query-5 result:wrong, io:correct
+
+
+
+***** test/test8
+query-1 missing
+query-2 missing
+query-3 missing
+query-4 missing
+query-5 missing
+query-6 missing
+query-7 missing
+query-8 missing
+query-9 missing
+query-10 missing
+query-11 missing
+query-12 missing
+
+
+
+***** test/test9
+query-1 result:wrong, io:correct
+query-2 result:correct, io:correct
+query-3 result:correct, io:correct
+query-4 result:wrong, io:correct
+query-5 result:correct, io:correct
+query-6 result:correct, io:correct
+query-7 result:correct, io:correct
+query-8 result:correct, io:correct
+query-9 result:correct, io:correct
+
+
+
+***** test/test10
+query-1 missing
+query-2 missing
+query-3 missing
+query-4 missing
+query-5 missing
+query-6 missing
+query-7 missing
+query-8 missing
+
+
+
+Query result score: 2.4286, read io score: 2.7143
+
+Final test score:5.1429
+

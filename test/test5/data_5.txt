@@ -1,6 +1,6 @@
 database_meta 4
 
-table_meta 52 t1_name 2 
+table_meta 100 t1_name 2 
 1 2
 5 6
 100 1000
@@ -10,7 +10,7 @@ table_meta 52 t1_name 2
 5 2
 100 3
 
-table_meta 53 t2_name 3
+table_meta 200 t2_name 3
 6 2 2
 62 734 32
 100 534 23
@@ -23,7 +23,7 @@ table_meta 53 t2_name 3
 362 83 1
 
 
-table_meta 84 t3_name 4 
+table_meta 300 t3_name 4 
 743 652 54 73
 23423 745 12 654
 32 34 2634 34
@@ -32,8 +32,7 @@ table_meta 84 t3_name 4
 32 5 2 2
 234 7 12 4
 
-table_meta 75 t4_name 6
-
+table_meta 400 t4_name 6
 3 63 27 34 12 5
 325 74 24 74 46 2
 

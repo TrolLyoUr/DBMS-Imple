@@ -180,6 +180,10 @@ _Table *join(const UINT idx1, const char *table1_name, const UINT idx2, const ch
         printf("Table not found: %s or %s\n", table1_name, table2_name);
         return NULL;
     }
+    else
+    {
+        printf("Table found: %s and %s\n", table1_name, table2_name);
+    }
 
     if (idx1 >= table1->nattrs || idx2 >= table2->nattrs)
     {
@@ -546,6 +550,8 @@ _Table **partition_table(Table *table, int attr, hash_function hash_func, int ta
 
             partitions[part_id] = partition;
         }
+
+        release_page(pool, table->oid, page_id);
     }
     rewind(table_fp);
     return partitions;
